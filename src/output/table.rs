@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::env;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard};
@@ -263,8 +264,53 @@ impl Environment {
     }
 }
 
+fn search_zoneinfo(tz_name: &str) -> std::path::PathBuf {
+    let zoneinfo_dirs = ["/usr/share/zoneinfo", "/share/zoneinfo", "/etc/zoneinfo"];
+    for dir in zoneinfo_dirs.iter() {
+        let mut zone_path_buf = std::path::PathBuf::new();
+        zone_path_buf.push(dir);
+        zone_path_buf.push(tz_name);
+        if std::fs::metadata(&zone_path_buf).is_ok()
+        {
+            return zone_path_buf;
+        }
+    }
+    std::path::PathBuf::new()
+}
+
 fn determine_time_zone() -> TZResult<TimeZone> {
-    TimeZone::from_file("/etc/localtime")
+    match env::var_os("TZ") {
+        Some(tz) => {
+            let tz_str = tz.to_str().unwrap();
+            if tz_str.starts_with("./") || tz_str.starts_with("/") {
+                match TimeZone::from_file(tz_str) {
+                    Ok(result) => return Ok(result),
+                    Err(_) => {debug!("File {} defined in TZ not found", tz_str);}
+                }
+            } else if tz_str.len() > 0 {
+                // Instead of converting POSIX TZ definition to TimeZone struct
+                // search for file with std name in zoneinfo
+                let tz_name = tz_str.split(',').collect::<Vec<&str>>()[0];
+                match TimeZone::from_file(search_zoneinfo(&tz_name)) {
+                    Ok(result) => return Ok(result),
+                    Err(_) => {debug!("Zoneinfo for timezone {} defined in TZ not found", tz_str);}
+                }
+            }
+        },
+        None => {debug!("TZ is not set");}
+    }
+
+    match TimeZone::from_file("/etc/localtime") {
+        Ok(result) => return Ok(result),
+        Err(_) => {debug!("/etc/localtime file is missing");}
+    }
+
+    match TimeZone::from_file(search_zoneinfo("UTC")) {
+        Ok(result) => return Ok(result),
+        Err(_) => {debug!("UTC zoneinfo is missing");}
+    }
+
+    Err(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "No TZ option matched")))
 }
 
 
